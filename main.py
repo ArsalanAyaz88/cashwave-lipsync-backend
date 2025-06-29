@@ -1,5 +1,6 @@
 import os
 import typing
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 import cloudinary
 import cloudinary.uploader
@@ -43,6 +44,23 @@ app = FastAPI(
     title="LipSync API",
     description="A FastAPI wrapper for the Synchronicity Labs LipSync SDK.",
     version="1.0.0",
+)
+
+# --- CORS Middleware Configuration ---
+# This allows the frontend (running on a different origin) to communicate with the API.
+origins = [
+    "http://localhost:8080",  # Standard React dev server
+    "http://127.0.0.1:8080",
+    "http://localhost:5173",  # Standard Vite dev server
+    "http://localhost:3000",  # Common port for Node.js servers
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  # Allows specified origins
+    allow_credentials=True, # Allows cookies to be included in requests
+    allow_methods=["*"],    # Allows all HTTP methods
+    allow_headers=["*"],    # Allows all headers
 )
 
 # --- SDK Client Initialization ---
@@ -106,16 +124,40 @@ async def list_generations():
 
 
 @app.post("/generations/estimate-cost", tags=["Generations"])
-async def estimate_cost(request: CreateGenerationRequest):
+async def estimate_cost(
+    video_file: UploadFile = File(..., description="The video file to upload."),
+    audio_file: UploadFile = File(..., description="The audio file to upload."),
+    model: str = Form("lipsync-2", description="The model to use for generation."),
+):
     """
-    Estimate the cost of a generation job without creating it.
+    Estimate the cost of a generation job by uploading files first.
     """
     try:
+        # Upload video to Cloudinary
+        video_upload_result = cloudinary.uploader.upload(
+            video_file.file,
+            resource_type="video",
+            folder="lipsync_uploads",
+        )
+        video_url = video_upload_result.get("secure_url")
+
+        # Upload audio to Cloudinary
+        audio_upload_result = cloudinary.uploader.upload(
+            audio_file.file,
+            resource_type="video",
+            folder="lipsync_uploads",
+        )
+        audio_url = audio_upload_result.get("secure_url")
+
+        if not video_url or not audio_url:
+            raise HTTPException(status_code=500, detail="File upload to Cloudinary failed for cost estimation.")
+
+        # Estimate cost with the new Cloudinary URLs
         inputs = [
-            Video(url=request.video_url),
-            Audio(url=request.audio_url),
+            Video(url=video_url),
+            Audio(url=audio_url),
         ]
-        cost = await client.generations.estimate_cost(input=inputs, model=request.model)
+        cost = await client.generations.estimate_cost(input=inputs, model=model)
         return cost
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -125,7 +167,7 @@ async def estimate_cost(request: CreateGenerationRequest):
 async def upload_and_generate(
     video_file: UploadFile = File(..., description="The video file to upload."),
     audio_file: UploadFile = File(..., description="The audio file to upload."),
-    model: str = Form("sync-2", description="The model to use for generation."),
+    model: str = Form("lipsync-2", description="The model to use for generation."),
 ):
     """
     Upload a video and audio file, then create a lip-sync generation.
